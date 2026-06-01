@@ -1,0 +1,14 @@
+/* 軌跡描画用 canvas のスタイル保険
+   （主要なスタイルは content.js 側でインライン指定しているが、
+    ページ CSS の影響を受けないよう最低限ここでも固定しておく） */
+#__mouse_gesture_canvas__ {
+  position: fixed !important;
+  top: 0 !important;
+  left: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: none !important;
+  background: transparent !important;
+  pointer-events: none !important;
+  z-index: 2147483647 !important;
+}
