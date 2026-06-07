@@ -151,9 +151,9 @@ function executeAction(action) {
 // 右ボタン押下でトラッキング開始
 function onMouseDown(e) {
   if (e.button !== 2) return; // 右ボタン以外は無視
-  // Shift + 右クリックはジェスチャを開始せず、コンテキストメニューを許可する
-  // （特に macOS でメニューを表示したいときのエスケープハッチ）
-  if (e.shiftKey) {
+  // Command(⌘) + 右クリックはジェスチャを開始せず、コンテキストメニューを許可する
+  // （特に macOS でメニューを表示したいときのエスケープハッチ。⌘ は metaKey）
+  if (e.metaKey) {
     tracking = false;
     moved = false;
     return;
@@ -213,8 +213,8 @@ function onMouseUp(e) {
 
 // contextmenu の抑制判定
 function onContextMenu(e) {
-  // Shift + 右クリックのときは常にメニューを表示する（抑制しない）
-  if (e.shiftKey) {
+  // Command(⌘) + 右クリックのときは常にメニューを表示する（抑制しない）
+  if (e.metaKey) {
     suppressContextMenu = false;
     return;
   }
