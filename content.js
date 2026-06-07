@@ -26,6 +26,18 @@ const THRESHOLD = 30;   // 方向を確定するための最小移動距離(px)
 const TRAIL_COLOR = "rgba(0, 130, 255, 0.85)";
 const TRAIL_WIDTH = 4;
 
+// macOS 判定
+// macOS の Chrome は右ボタンを「押した瞬間(mousedown)」に contextmenu を発火する。
+// メニューが開くと以降の mousemove/mouseup がページに届かずジェスチャが成立しないため、
+// macOS では右ボタントラッキング中の contextmenu を常に抑制する（プレーンな
+// 右クリックメニューも出なくなるが、ジェスチャを成立させるには不可避）。
+// Windows / Linux は contextmenu が mouseup 時に発火するため、移動を伴うジェスチャ
+// のときだけ抑制し、単なる右クリックでは通常どおりメニューを表示する。
+const IS_MAC =
+  (navigator.userAgentData && navigator.userAgentData.platform === "macOS") ||
+  /Mac|iPhone|iPad/.test(navigator.platform || "") ||
+  /Mac OS X/.test(navigator.userAgent || "");
+
 // ------------------------------------------------------------
 // 状態変数
 // ------------------------------------------------------------
@@ -36,6 +48,7 @@ let directions = [];        // 確定した方向のシーケンス
 let canvas = null;          // 軌跡描画用 canvas
 let ctx = null;             // canvas の 2D コンテキスト
 let trailPoints = [];       // 軌跡の点列
+let suppressContextMenu = false; // 直後の contextmenu を抑制するか
 
 // ============================================================
 // 軌跡表示用 canvas の生成・破棄・描画
@@ -138,6 +151,13 @@ function executeAction(action) {
 // 右ボタン押下でトラッキング開始
 function onMouseDown(e) {
   if (e.button !== 2) return; // 右ボタン以外は無視
+  // Command(⌘) + 右クリックはジェスチャを開始せず、コンテキストメニューを許可する
+  // （特に macOS でメニューを表示したいときのエスケープハッチ。⌘ は metaKey）
+  if (e.metaKey) {
+    tracking = false;
+    moved = false;
+    return;
+  }
   tracking = true;
   moved = false;
   lastX = e.clientX;
@@ -184,14 +204,28 @@ function onMouseUp(e) {
       executeAction(action);
     }
   }
+
+  // Win/Linux 用: mouseup の後に発火する contextmenu を抑制するか決める。
+  // 移動を伴うジェスチャのときだけ抑制し、単なる右クリックは通常どおり表示する。
+  suppressContextMenu = moved;
+  moved = false;
 }
 
-// ジェスチャ成立（移動あり）の直後の contextmenu のみ抑制する
+// contextmenu の抑制判定
 function onContextMenu(e) {
-  if (moved) {
-    e.preventDefault();
-    moved = false; // 一度きりの抑制
+  // Command(⌘) + 右クリックのときは常にメニューを表示する（抑制しない）
+  if (e.metaKey) {
+    suppressContextMenu = false;
+    return;
   }
+  // macOS: 右ボタントラッキング中なら常に抑制（mousedown 時点で発火するため、
+  //        この時点ではジェスチャか単なるクリックか判別できない）。
+  // 全OS共通: mouseup 後に発火するケース(suppressContextMenu)や、mouseup より先に
+  //          発火するケース(tracking && moved)も抑制する。
+  if (suppressContextMenu || (tracking && moved) || (IS_MAC && tracking)) {
+    e.preventDefault();
+  }
+  suppressContextMenu = false;
 }
 
 // ============================================================
