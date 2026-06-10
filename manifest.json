@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Mouse Gestures",
+  "name": "Mouse Navigator",
   "version": "1.0.0",
-  "description": "右ボタンドラッグでページ操作を行う個人用マウスジェスチャ拡張機能",
+  "description": "マウスジェスチャとホイールクリックのオートスクロールを備えた個人用拡張機能",
   "permissions": ["tabs", "sessions"],
   "host_permissions": ["<all_urls>"],
   "background": {

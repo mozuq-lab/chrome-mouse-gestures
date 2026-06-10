@@ -26,6 +26,21 @@ const THRESHOLD = 30;   // 方向を確定するための最小移動距離(px)
 const TRAIL_COLOR = "rgba(0, 130, 255, 0.85)";
 const TRAIL_WIDTH = 4;
 
+// ミドルクリック（ホイールクリック）オートスクロールの設定
+const AUTOSCROLL_DEADZONE = 12;      // 起点からこの距離まではスクロールしない(px)
+const AUTOSCROLL_SPEED = 0.18;       // 起点からの距離に対するスクロール速度係数
+const AUTOSCROLL_DRAG_THRESHOLD = 8; // この距離を超えて押したまま動かすとドラッグ扱い(px)
+// 起点に表示する丸いインジケータ（上下左右の矢印つき）
+const AUTOSCROLL_ICON_SVG =
+  '<svg width="30" height="30" viewBox="0 0 30 30" xmlns="http://www.w3.org/2000/svg">' +
+  '<circle cx="15" cy="15" r="14" fill="rgba(255,255,255,0.85)" stroke="rgba(0,0,0,0.45)" stroke-width="1"/>' +
+  '<circle cx="15" cy="15" r="2.5" fill="rgba(0,0,0,0.6)"/>' +
+  '<path d="M15 3 l4 5 h-8 z" fill="rgba(0,0,0,0.55)"/>' +
+  '<path d="M15 27 l4 -5 h-8 z" fill="rgba(0,0,0,0.55)"/>' +
+  '<path d="M3 15 l5 -4 v8 z" fill="rgba(0,0,0,0.55)"/>' +
+  '<path d="M27 15 l-5 -4 v8 z" fill="rgba(0,0,0,0.55)"/>' +
+  '</svg>';
+
 // macOS 判定
 // macOS の Chrome は右ボタンを「押した瞬間(mousedown)」に contextmenu を発火する。
 // メニューが開くと以降の mousemove/mouseup がページに届かずジェスチャが成立しないため、
@@ -49,6 +64,17 @@ let canvas = null;          // 軌跡描画用 canvas
 let ctx = null;             // canvas の 2D コンテキスト
 let trailPoints = [];       // 軌跡の点列
 let suppressContextMenu = false; // 直後の contextmenu を抑制するか
+
+// オートスクロール用の状態
+let autoScrolling = false;        // オートスクロール中か
+let autoAnchorX = 0, autoAnchorY = 0; // 起点（基準点）
+let autoCurX = 0, autoCurY = 0;   // 現在のカーソル位置
+let autoBtnDown = false;          // ミドルボタンを押下中か（ドラッグ判定用）
+let autoDragMode = false;         // 押したまま動かした(ドラッグ)モードか
+let autoOverlay = null;           // 全画面オーバーレイ（カーソル変更・イベント捕捉）
+let autoRafId = 0;                // requestAnimationFrame のID
+let autoScrollTarget = null;      // スクロール対象要素（null なら window）
+let autoMiddleHandled = false;    // 直後の auxclick(中クリック既定動作)を抑制するか
 
 // ============================================================
 // 軌跡表示用 canvas の生成・破棄・描画
@@ -145,11 +171,124 @@ function executeAction(action) {
 }
 
 // ============================================================
+// ミドルクリック（ホイールクリック）オートスクロール
+// macOS は OS レベルでミドルクリックの自動スクロールを持たないため拡張側で実装する
+// ============================================================
+
+// 指定座標の下にある縦スクロール可能な祖先要素を探す（無ければ null = window をスクロール）
+function findScrollable(x, y) {
+  let el = document.elementFromPoint(x, y);
+  while (el && el !== document.body && el !== document.documentElement) {
+    const style = getComputedStyle(el);
+    const canScrollY =
+      (style.overflowY === "auto" || style.overflowY === "scroll") &&
+      el.scrollHeight > el.clientHeight;
+    const canScrollX =
+      (style.overflowX === "auto" || style.overflowX === "scroll") &&
+      el.scrollWidth > el.clientWidth;
+    if (canScrollY || canScrollX) return el;
+    el = el.parentElement;
+  }
+  return null;
+}
+
+// 対象（要素 or window）を相対スクロールする
+function scrollTargetBy(dx, dy) {
+  if (autoScrollTarget) {
+    autoScrollTarget.scrollBy(dx, dy);
+  } else {
+    window.scrollBy(dx, dy);
+  }
+}
+
+// オートスクロールを開始する
+function startAutoScroll(x, y) {
+  autoScrolling = true;
+  autoAnchorX = autoCurX = x;
+  autoAnchorY = autoCurY = y;
+  autoDragMode = false;
+  // オーバーレイを追加する前にスクロール対象を確定する
+  autoScrollTarget = findScrollable(x, y);
+
+  // 全画面オーバーレイ：カーソルを変更し、マウス操作を確実に捕捉する
+  autoOverlay = document.createElement("div");
+  autoOverlay.id = "__mg_autoscroll_overlay__";
+  autoOverlay.style.cssText =
+    "position:fixed;inset:0;z-index:2147483647;cursor:all-scroll;" +
+    "background:transparent;margin:0;padding:0;user-select:none;";
+
+  // 起点インジケータ（丸＋矢印）を起点位置に配置
+  const indicator = document.createElement("div");
+  indicator.style.cssText =
+    "position:fixed;left:" + x + "px;top:" + y + "px;" +
+    "transform:translate(-50%,-50%);width:30px;height:30px;" +
+    "pointer-events:none;z-index:2147483647;";
+  indicator.innerHTML = AUTOSCROLL_ICON_SVG;
+  autoOverlay.appendChild(indicator);
+  (document.body || document.documentElement).appendChild(autoOverlay);
+
+  autoLoop();
+}
+
+// オートスクロールを停止する
+function stopAutoScroll() {
+  autoScrolling = false;
+  autoBtnDown = false;
+  autoDragMode = false;
+  if (autoRafId) cancelAnimationFrame(autoRafId);
+  autoRafId = 0;
+  if (autoOverlay && autoOverlay.parentNode) {
+    autoOverlay.parentNode.removeChild(autoOverlay);
+  }
+  autoOverlay = null;
+  autoScrollTarget = null;
+}
+
+// 毎フレーム、起点と現在位置の差に応じてスクロールする
+function autoLoop() {
+  if (!autoScrolling) return;
+  const dx = autoCurX - autoAnchorX;
+  const dy = autoCurY - autoAnchorY;
+  const dist = Math.hypot(dx, dy);
+  if (dist > AUTOSCROLL_DEADZONE) {
+    // デッドゾーン分を差し引いた量に比例した速度でスクロール
+    const scale = ((dist - AUTOSCROLL_DEADZONE) / dist) * AUTOSCROLL_SPEED;
+    scrollTargetBy(dx * scale, dy * scale);
+  }
+  autoRafId = requestAnimationFrame(autoLoop);
+}
+
+// ============================================================
 // マウスイベントハンドラ
 // ============================================================
 
 // 右ボタン押下でトラッキング開始
 function onMouseDown(e) {
+  // オートスクロール中はどのボタンでクリックしても解除する
+  if (autoScrolling) {
+    autoMiddleHandled = e.button === 1; // 中クリックで解除した場合は auxclick を抑制
+    stopAutoScroll();
+    e.preventDefault();
+    return;
+  }
+
+  // ミドルボタン（ホイールクリック）：オートスクロール開始
+  if (e.button === 1) {
+    // リンクやフォーム部品の上では既定動作（新規タブで開く等）を優先する
+    const interactive =
+      e.target.closest &&
+      e.target.closest('a[href],button,input,textarea,select,[role="button"]');
+    if (interactive) {
+      autoMiddleHandled = false;
+      return;
+    }
+    e.preventDefault();
+    autoMiddleHandled = true;
+    autoBtnDown = true;
+    startAutoScroll(e.clientX, e.clientY);
+    return;
+  }
+
   if (e.button !== 2) return; // 右ボタン以外は無視
   // Command(⌘) + 右クリックはジェスチャを開始せず、コンテキストメニューを許可する
   // （特に macOS でメニューを表示したいときのエスケープハッチ。⌘ は metaKey）
@@ -169,6 +308,21 @@ function onMouseDown(e) {
 
 // 移動を追跡し、しきい値を超えたら方向を確定する
 function onMouseMove(e) {
+  // オートスクロール中はカーソル位置を更新する（実際のスクロールは rAF ループが行う）
+  if (autoScrolling) {
+    autoCurX = e.clientX;
+    autoCurY = e.clientY;
+    // 押したまま一定距離動いたらドラッグモード（離したら停止する方式）にする
+    if (
+      autoBtnDown &&
+      Math.hypot(e.clientX - autoAnchorX, e.clientY - autoAnchorY) >
+        AUTOSCROLL_DRAG_THRESHOLD
+    ) {
+      autoDragMode = true;
+    }
+    return;
+  }
+
   if (!tracking) return;
 
   // 軌跡に現在位置を追加して再描画
@@ -193,6 +347,17 @@ function onMouseMove(e) {
 
 // 右ボタンを離したらシーケンスを照合し動作を実行
 function onMouseUp(e) {
+  // ミドルボタンを離したとき：
+  //  - ドラッグして動かしていた → ここで停止（押し続けスクロール方式）
+  //  - ほぼ動かさずクリックしただけ → 継続モード（次のクリックまでスクロール）
+  if (autoScrolling && e.button === 1 && autoBtnDown) {
+    autoBtnDown = false;
+    autoMiddleHandled = true; // 直後の auxclick を抑制
+    if (autoDragMode) stopAutoScroll();
+    e.preventDefault();
+    return;
+  }
+
   if (e.button !== 2 || !tracking) return;
   tracking = false;
   destroyCanvas();
@@ -228,6 +393,23 @@ function onContextMenu(e) {
   suppressContextMenu = false;
 }
 
+// ミドルクリックの既定動作（新規タブで開く等）を、オートスクロールに使った
+// ときだけ抑制する。リンク上などで使った場合は抑制せず通常どおり開く。
+function onAuxClick(e) {
+  if (e.button === 1 && autoMiddleHandled) {
+    e.preventDefault();
+    e.stopPropagation();
+  }
+  autoMiddleHandled = false;
+}
+
+// Esc キーでオートスクロールを解除できるようにする
+function onKeyDown(e) {
+  if (autoScrolling && e.key === "Escape") {
+    stopAutoScroll();
+  }
+}
+
 // ============================================================
 // イベント登録
 // capture フェーズで先取りし、ページ側のハンドラより前に処理する
@@ -236,6 +418,8 @@ document.addEventListener("mousedown", onMouseDown, true);
 document.addEventListener("mousemove", onMouseMove, true);
 document.addEventListener("mouseup", onMouseUp, true);
 document.addEventListener("contextmenu", onContextMenu, true);
+document.addEventListener("auxclick", onAuxClick, true);
+document.addEventListener("keydown", onKeyDown, true);
 
 // ウィンドウリサイズ時は canvas サイズを追従させる
 window.addEventListener("resize", () => {
